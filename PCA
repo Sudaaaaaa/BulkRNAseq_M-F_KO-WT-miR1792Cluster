@@ -1,0 +1,21 @@
+# PCA (sex = PC1, injury = PC2)
+ntop <- 500
+rv   <- apply(logcpm, 1, var)
+sel  <- order(rv, decreasing = TRUE)[seq_len(ntop)]
+pca  <- prcomp(t(logcpm[sel, ]), scale. = FALSE)
+pv   <- round(100 * pca$sdev^2 / sum(pca$sdev^2), 1)
+
+png(file.path(figdir, "PCA.png"), width = 7, height = 5.5, units="in", res=300)
+dfp <- data.frame(PC1 = pca$x[,1], PC2 = pca$x[,2],
+                  sex = sheet$sex, condition = sheet$condition,
+                  qc = sheet$qc_flag, label = sheet$label)
+ggplot(dfp, aes(PC1, PC2, color = condition, shape = sex)) +
+  geom_point(size = 3.2) +
+  geom_point(data = subset(dfp, qc == "corr_outlier"),
+             shape = 21, size = 5, color = "red", fill = NA, stroke = 1.1) +
+  scale_color_manual(values = c(CON = "#4C72B0", IRI = "#DD8452")) +
+  labs(x = sprintf("PC1 (%.1f%%) \u2014 sex", pv[1]),
+       y = sprintf("PC2 (%.1f%%) \u2014 injury", pv[2]),
+       title = "PCA of proximal tubule transcriptomes") +
+  theme_bw(base_size = 12) + theme(panel.grid.minor = element_blank())
+dev.off()
