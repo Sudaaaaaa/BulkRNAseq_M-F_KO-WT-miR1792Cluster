@@ -1,0 +1,635 @@
+
+#Pipeline: GSVA + limma, fgsea, ComplexHeatmap)
+# low-depth technical failure F-IRI-231-KO dropped from expression analyses.
+
+proj <- "~/R/KO_RNASeq"
+figdir <- file.path(proj, "figures_final")
+dir.create(figdir, showWarnings = FALSE)
+em <- read.delim(file.path(proj, "C5KKZF-expression-matrix.tsv"),
+                 check.names = FALSE)
+gene_meta <- em[, c("gene_id","gene_name","gene_biotype")]
+cnt_cols  <- grep("_count$", colnames(em), value = TRUE)
+counts    <- as.matrix(em[, cnt_cols]); storage.mode(counts) <- "integer"
+rownames(counts) <- em$gene_id
+colnames(counts) <- sub("_count$", "", cnt_cols)
+
+# ********************************************************************************
+# ---- fig-setup ----
+# ********************************************************************************
+suppressPackageStartupMessages({
+  library(edgeR); library(limma); library(GSVA); library(msigdbr)
+  library(fgsea); library(ComplexHeatmap); library(circlize); library(grid)
+  library(ggplot2); library(dplyr); library(tidyr); library(tibble); library(scales)
+})
+
+proj <- "~/R/KO_RNASeq"          #>> CHECK path
+figdir <- file.path(proj, "figures_final")
+dir.create(figdir, showWarnings = FALSE)
+
+sheet <- read.csv(file.path(proj, "sample_sheet.csv"),
+                  colClasses = c(animal = "character"))
+rownames(sheet) <- sheet$sample_id
+drop_ids <- rownames(sheet)[sheet$label == "F-IRI-231-KO"]
+keep_ids <- setdiff(colnames(counts), drop_ids)
+counts_f <- counts[, keep_ids]
+sheet    <- sheet[keep_ids, ]
+sheet$sex       <- factor(sheet$sex,       levels = c("F","M"))
+sheet$genotype  <- factor(sheet$genotype,  levels = c("WT","KO"))
+sheet$condition <- factor(sheet$condition, levels = c("CON","IRI"))
+sheet$animal    <- factor(sheet$animal)
+sheet$group     <- factor(paste(sheet$sex, sheet$genotype, sep = "_"))
+
+## expression filter (>=10 counts in >=3 samples) + log2-CPM
+counts_f <- counts_f[rowSums(counts_f >= 10) >= 3, ]
+logcpm   <- log2(sweep(counts_f, 2, colSums(counts_f), "/") * 1e6 + 1)
+
+sym2id <- split(gene_meta$gene_id, gene_meta$gene_name)
+id2sym <- setNames(gene_meta$gene_name, gene_meta$gene_id)
+
+## shared palette (blue-grey-yellow) used across figures
+bwy      <- colorRamp2(c(-2, 0, 2), c("#3A5FCD", "#F2F2F2", "#E8A000"))
+bwy_gg   <- c(low = "#3A5FCD", mid = "#F2F2F2", high = "#E8A000")
+sex_lab  <- c(F = "Female (22 min IRI)", M = "Male (20 min IRI)")
+markers8 <- c("Jak2","Jak1","Il6ra","Il6st","Stat3","Il6","Lcn2","Havcr1")
+
+cat("Samples after dropping 231:", ncol(counts_f), "\n")
+print(table(sheet$group, sheet$condition))
+
+
+# ## PCA (sex = PC1, injury = PC2)
+
+
+# ********************************************************************************
+# ---- fig-pca ----
+# ********************************************************************************
+ntop <- 500
+rv   <- apply(logcpm, 1, var)
+sel  <- order(rv, decreasing = TRUE)[seq_len(ntop)]
+pca  <- prcomp(t(logcpm[sel, ]), scale. = FALSE)
+pv   <- round(100 * pca$sdev^2 / sum(pca$sdev^2), 1)
+
+png(file.path(figdir, "PCA.png"), width = 7, height = 5.5, units="in", res=300)
+dfp <- data.frame(PC1 = pca$x[,1], PC2 = pca$x[,2],
+                  sex = sheet$sex, condition = sheet$condition,
+                  qc = sheet$qc_flag, label = sheet$label)
+ggplot(dfp, aes(PC1, PC2, color = condition, shape = sex)) +
+  geom_point(size = 3.2) +
+  geom_point(data = subset(dfp, qc == "corr_outlier"),
+             shape = 21, size = 5, color = "red", fill = NA, stroke = 1.1) +
+  scale_color_manual(values = c(CON = "#4C72B0", IRI = "#DD8452")) +
+  labs(x = sprintf("PC1 (%.1f%%) \u2014 sex", pv[1]),
+       y = sprintf("PC2 (%.1f%%) \u2014 injury", pv[2]),
+       title = "PCA of proximal tubule transcriptomes") +
+  theme_bw(base_size = 12) + theme(panel.grid.minor = element_blank())
+dev.off()
+
+
+# ## QC: sample-sample correlation + top-variable-gene heatmap
+
+
+
+# ********************************************************************************
+# ---- fig-qc ----
+# ********************************************************************************
+## full-set logcpm INCLUDING 231 (QC figure only)
+counts_all <- counts[rowSums(counts >= 10) >= 3, ]
+logcpm_all <- log2(sweep(counts_all, 2, colSums(counts_all), "/") * 1e6 + 1)
+sheet_all  <- read.csv(file.path(proj, "sample_sheet.csv"),
+                       colClasses = c(animal="character"))
+rownames(sheet_all) <- sheet_all$sample_id
+sheet_all <- sheet_all[colnames(logcpm_all), ]
+
+v  <- apply(logcpm_all, 1, var)
+hv <- names(sort(v, decreasing = TRUE))[1:2000]
+cormat <- cor(logcpm_all[hv, ]); 
+rownames(cormat) <- colnames(cormat) <- sheet_all$label
+
+ann_cols <- list(
+  sex       = c(F="#8B2E2E", M="#1F4E79"),
+  condition = c(CON="#8FD9C0", IRI="#8B2E2E"),
+  genotype  = c(WT="#B4B2A9", KO="#444441"))
+flags <- sort(unique(sheet_all$qc_flag)); other <- setdiff(flags, "ok")
+ann_cols$qc_flag <- setNames(c(if ("ok" %in% flags) "grey85",
+                               hue_pal()(length(other))),
+                             c(if ("ok" %in% flags) "ok", other))
+top_ann <- HeatmapAnnotation(df = sheet_all[, c("sex","condition","genotype","qc_flag")],
+                             col = ann_cols,
+                             annotation_name_gp = gpar(fontsize = 8))
+
+png(file.path(figdir, "QC_correlation.png"), width = 11, height = 10, units="in", res=300)
+draw(Heatmap(cormat, name = "Pearson r",
+             col = colorRamp2(c(min(cormat),(min(cormat)+1)/2,1),
+                              c("#3A5FCD","#F2F2F2","#E8A000")),
+             top_annotation = top_ann,
+             show_row_names = TRUE, show_column_names = FALSE,
+             row_names_gp = gpar(fontsize = 6),
+             column_title = sprintf("Sample-sample correlation (top 2000 var genes); median r = %.3f",
+                                    median(cormat[lower.tri(cormat)]))),
+     merge_legend = TRUE)
+dev.off()
+
+## top-40 variable gene heatmap
+tv  <- names(sort(v, decreasing = TRUE))[1:40]
+mat <- t(scale(t(logcpm_all[tv, ])))
+rownames(mat) <- ifelse(is.na(id2sym[tv]) | id2sym[tv]=="", tv, id2sym[tv])
+colnames(mat) <- sheet_all$label
+png(file.path(figdir, "QC_topvariable.png"), width = 11, height = 10, units="in", res=300)
+draw(Heatmap(mat, name = "z-score", col = bwy, top_annotation = top_ann,
+             show_column_names = FALSE, row_names_gp = gpar(fontsize = 7),
+             column_title = "Top 40 most-variable genes (z-scored)"),
+     merge_legend = TRUE)
+dev.off()
+
+
+# ## JAK/STAT 8-marker heatmap (z within sex, group means)
+
+
+# ********************************************************************************
+# ---- fig-marker-heatmap ----
+# ********************************************************************************
+gid <- unlist(sym2id[markers8]); gid <- gid[gid %in% rownames(counts_f)]
+present <- names(id2sym[gid])  # keep order
+long <- as.data.frame(as.table(as.matrix(logcpm[gid, ])))
+colnames(long) <- c("gene_id","sample","logcpm")
+long$gene <- id2sym[as.character(long$gene_id)]
+long <- merge(long, sheet[, c("sample_id","sex","genotype","condition")],
+              by.x = "sample", by.y = "sample_id")
+long <- long |> group_by(sex, gene) |>
+  mutate(z = as.numeric(scale(logcpm))) |> ungroup()
+long$grp  <- factor(paste(long$genotype, long$condition, sep="_"),
+                    levels = c("WT_CON","KO_CON","WT_IRI","KO_IRI"))
+long$gene <- factor(long$gene, levels = rev(markers8))
+hm <- long |> group_by(sex, gene, grp) |> summarise(z = mean(z), .groups="drop")
+
+png(file.path(figdir, "JAKSTAT_marker_heatmap.png"), width = 7.5, height = 4, units="in", res=300)
+ggplot(hm, aes(grp, gene, fill = z)) +
+  geom_tile(color = "grey30", linewidth = 0.5) +
+  facet_wrap(~ sex, labeller = as_labeller(sex_lab)) +
+  scale_fill_gradient2(low = bwy_gg["low"], mid = bwy_gg["mid"], high = bwy_gg["high"],
+                       midpoint = 0, name = "z-score\n(within sex)") +
+  labs(x = NULL, y = NULL, title = "JAK/STAT3 markers: injury response by genotype") +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1),
+        panel.grid = element_blank(), strip.text = element_text(face = "bold"),
+        axis.text.y = element_text(face = "italic"))
+dev.off()
+
+
+# ## GSVA 7-arm heatmap + per-sex KOxIRI interaction (REAL GSVA)
+
+
+# ********************************************************************************
+# ---- fig-gsva-arms ----
+# ********************************************************************************
+panel <- list(
+  IFN_STAT1     = "HALLMARK_INTERFERON_GAMMA_RESPONSE",
+  STAT1_targets = "BAKER_HEMATOPOESIS_STAT1_TARGETS",
+  IL6_JAK_STAT3 = "HALLMARK_IL6_JAK_STAT3_SIGNALING",
+  IL6_signaling = "WP_IL6_SIGNALING_PATHWAY",
+  STAT3_targets = "BAKER_HEMATOPOIESIS_STAT3_TARGETS",
+  IL2_STAT5     = "HALLMARK_IL2_STAT5_SIGNALING",
+  STAT5_targets = "BAKER_HEMATOPOESIS_STAT5_TARGETS")
+mh <- msigdbr(db_species="MM", species="Mus musculus", collection="MH")
+m2 <- msigdbr(db_species="MM", species="Mus musculus", collection="M2")
+allsets <- rbind(mh[,c("gs_name","gene_symbol")], m2[,c("gs_name","gene_symbol")])
+sets_id <- lapply(panel, function(nm)
+  intersect(unique(unlist(sym2id[unique(allsets$gene_symbol[allsets$gs_name==nm])])),
+            rownames(counts_f)))
+scores <- gsva(gsvaParam(logcpm, sets_id, kcdf="Gaussian"))
+
+## interaction per sex (blocked on animal) -- the values of record
+test_one_sex <- function(sx) {
+  cols <- sheet$sex == sx; s <- droplevels(sheet[cols, ])
+  d  <- model.matrix(~ genotype * condition, data = s)
+  ic <- grep("genotypeKO:conditionIRI", colnames(d), value = TRUE)
+  dc <- duplicateCorrelation(scores[, cols], d, block = s$animal)
+  fit<- eBayes(lmFit(scores[, cols], d, block = s$animal, correlation = dc$consensus))
+  data.frame(sex = sx, arm = rownames(scores),
+             KOxIRI = round(fit$coefficients[, ic], 3),
+             p = signif(fit$p.value[, ic], 2),
+             padj = signif(p.adjust(fit$p.value[, ic], "BH"), 2))
+}
+arm_res <- rbind(test_one_sex("F"), test_one_sex("M"))
+write.csv(arm_res, file.path(figdir, "GSVA_arm_interaction.csv"), row.names = FALSE)
+print(arm_res)
+
+## heatmap of arm scores (z within sex, group means)
+sc_long <- as.data.frame(as.table(as.matrix(scores)))
+colnames(sc_long) <- c("arm","sample","gsva")
+sc_long <- merge(sc_long, sheet[,c("sample_id","sex","genotype","condition")],
+                 by.x="sample", by.y="sample_id")
+sc_long <- sc_long |> group_by(sex, arm) |>
+  mutate(z = as.numeric(scale(gsva))) |> ungroup()
+sc_long$grp <- factor(paste(sc_long$genotype, sc_long$condition, sep="_"),
+                      levels=c("WT_CON","KO_CON","WT_IRI","KO_IRI"))
+arm_order <- rev(names(panel))
+sc_long$arm <- factor(sc_long$arm, levels = arm_order)
+hmA <- sc_long |> group_by(sex, arm, grp) |> summarise(z=mean(z), .groups="drop")
+
+png(file.path(figdir, "GSVA_arms_heatmap.png"), width = 7.5, height = 4.2, units="in", res=300)
+ggplot(hmA, aes(grp, arm, fill = z)) +
+  geom_tile(color="grey30", linewidth=0.5) +
+  facet_wrap(~ sex, labeller = as_labeller(sex_lab)) +
+  scale_fill_gradient2(low=bwy_gg["low"], mid=bwy_gg["mid"], high=bwy_gg["high"],
+                       midpoint=0, name="z-score\n(within sex)") +
+  labs(x=NULL, y=NULL, title="JAK/STAT arms: injury response by genotype") +
+  theme_minimal(base_size=11) +
+  theme(axis.text.x=element_text(angle=45,hjust=1), panel.grid=element_blank(),
+        strip.text=element_text(face="bold"))
+dev.off()
+
+
+# ## Per-gene arm heatmap (ComplexHeatmap; REAL MSigDB top-25/arm)
+
+
+# ********************************************************************************
+# ---- fig-pergene ----
+# ********************************************************************************
+arm_of <- c(IFN_STAT1="STAT1/IFN", STAT1_targets="STAT1/IFN",
+            IL6_JAK_STAT3="STAT3", IL6_signaling="STAT3", STAT3_targets="STAT3",
+            IL2_STAT5="STAT5", STAT5_targets="STAT5")
+N_PER_ARM <- 25
+gene_arm <- character(0); ordered_genes <- character(0)
+for (nm in names(panel)) {
+  syms <- unique(allsets$gene_symbol[allsets$gs_name == panel[[nm]]])
+  syms <- setdiff(syms[syms %in% gene_meta$gene_name], ordered_genes)
+  ordered_genes <- c(ordered_genes, syms); gene_arm[syms] <- arm_of[nm]
+}
+gid <- gene_meta$gene_id[match(ordered_genes, gene_meta$gene_name)]
+ok  <- gid %in% rownames(counts_f); ordered_genes <- ordered_genes[ok]; gid <- gid[ok]
+m <- logcpm[gid, ]; rownames(m) <- ordered_genes
+gv <- apply(m, 1, var); arm_f <- gene_arm[ordered_genes]
+top_genes <- unlist(lapply(split(names(gv), arm_f), function(gs)
+  names(sort(gv[gs], decreasing=TRUE))[seq_len(min(N_PER_ARM, length(gs)))]))
+top_genes <- ordered_genes[ordered_genes %in% top_genes]
+
+zc <- function(sx){ cols<-rownames(sheet)[sheet$sex==sx]; t(scale(t(m[top_genes,cols]))) }
+ord <- function(sx){ s<-sheet[sheet$sex==sx,]
+g<-factor(paste(s$genotype,s$condition,sep="_"),levels=c("WT_CON","KO_CON","WT_IRI","KO_IRI"))
+rownames(s)[order(g)] }
+mF<-zc("F")[,ord("F")]; mM<-zc("M")[,ord("M")]
+arm_cols <- c("STAT1/IFN"="#7F77DD","STAT3"="#1D9E75","STAT5"="#D85A30")
+rs <- factor(gene_arm[top_genes], levels=c("STAT1/IFN","STAT3","STAT5"))
+row_ann <- rowAnnotation(arm=gene_arm[top_genes], col=list(arm=arm_cols),
+                         show_annotation_name=FALSE)
+top_ann <- function(cols){ s<-sheet[cols,]
+HeatmapAnnotation(genotype=s$genotype, condition=s$condition,
+                  col=list(genotype=c(WT="#B4B2A9",KO="#444441"),
+                           condition=c(CON="#8FD9C0",IRI="#8B2E2E")), show_annotation_name=FALSE) }
+hF <- Heatmap(mF, name="z (F)", col=bwy, cluster_rows=FALSE, cluster_columns=FALSE,
+              row_order=top_genes, left_annotation=row_ann, top_annotation=top_ann(colnames(mF)),
+              column_title="Female (22 min IRI)", show_column_names=FALSE,
+              show_row_names=TRUE, row_names_gp=gpar(fontsize=8), row_names_side="left",
+              row_split=rs, row_gap=unit(2,"mm"), border=TRUE)
+hM <- Heatmap(mM, name="z (M)", col=bwy, cluster_rows=FALSE, cluster_columns=FALSE,
+              row_order=top_genes, top_annotation=top_ann(colnames(mM)),
+              column_title="Male (20 min IRI)", show_column_names=FALSE,
+              show_row_names=FALSE, row_split=rs, row_gap=unit(2,"mm"), border=TRUE)
+png(file.path(figdir, "JAKSTAT_pergene_heatmap.png"), width=12, height=11, units="in", res=300)
+draw(hF + hM, ht_gap=unit(6,"mm"),
+     column_title=sprintf("JAK/STAT arms: top %d variable genes per arm (z within sex)", N_PER_ARM))
+dev.off()
+
+
+# ## Genome-wide KOxIRI interaction + per-sex injury DEG (limma-voom, blocked)
+
+
+# ********************************************************************************
+# ---- fig-interaction-injury ----
+# ********************************************************************************
+fit_by_sex <- function(sx, formula) {
+  s <- droplevels(sheet[sheet$sex == sx, ])
+  dge <- calcNormFactors(DGEList(counts_f[, rownames(s)]))
+  design <- model.matrix(formula, data = s)
+  v  <- voom(dge, design)
+  dc <- duplicateCorrelation(v, design, block = s$animal)
+  v  <- voom(dge, design, block = s$animal, correlation = dc$consensus)
+  dc <- duplicateCorrelation(v, design, block = s$animal)
+  eBayes(lmFit(v, design, block = s$animal, correlation = dc$consensus))
+}
+## injury DEG (IRI vs CON) per sex
+injF <- fit_by_sex("F", ~ condition); injM <- fit_by_sex("M", ~ condition)
+ttF <- topTable(injF, coef="conditionIRI", number=Inf); ttF$gene <- id2sym[rownames(ttF)]
+ttM <- topTable(injM, coef="conditionIRI", number=Inf); ttM$gene <- id2sym[rownames(ttM)]
+common <- intersect(rownames(ttF), rownames(ttM))
+r_conc <- cor(ttF[common,"logFC"], ttM[common,"logFC"])
+cat(sprintf("Injury DEG FDR<0.05: F=%d M=%d ; concordance r=%.3f\n",
+            sum(ttF$adj.P.Val<0.05), sum(ttM$adj.P.Val<0.05), r_conc))
+
+## volcano per sex, JAK/STAT markers labeled
+mk_id <- unlist(sym2id[markers8])
+volc <- function(tt, title) {
+  tt$sig <- tt$adj.P.Val < 0.05
+  tt$mk  <- id2sym[rownames(tt)] %in% markers8
+  ggplot(tt, aes(logFC, -log10(P.Value))) +
+    geom_point(aes(color = sig), size = 0.6, alpha = 0.4) +
+    geom_point(data = subset(tt, mk), shape = 21, size = 2.5, color = "#185FA5", fill = NA) +
+    scale_color_manual(values = c(`TRUE`="#C0392B",`FALSE`="grey80"), guide="none") +
+    ggrepel::geom_text_repel(data = subset(tt, mk), aes(label = id2sym[rownames(subset(tt, mk))]),
+                             fontface = "italic", size = 3) +
+    labs(x="log2 FC (IRI vs CON)", y="-log10 p", title=title) + theme_bw(base_size=11)
+}
+png(file.path(figdir, "injury_volcano.png"), width = 11, height = 5, units="in", res=300)
+gridExtra::grid.arrange(volc(ttF,"Female (22 min IRI)"),
+                        volc(ttM,"Male (20 min IRI)"), ncol = 2)
+dev.off()
+
+## concordance scatter
+cc <- data.frame(F = ttF[common,"logFC"], M = ttM[common,"logFC"],
+                 gene = id2sym[common])
+png(file.path(figdir, "injury_concordance.png"), width = 6, height = 6, units="in", res=300)
+ggplot(cc, aes(F, M)) +
+  geom_abline(slope=1, intercept=0, linetype="dashed", color="grey70") +
+  geom_point(size=0.5, alpha=0.3, color="grey50") +
+  geom_point(data=subset(cc, gene %in% markers8), color="#C0392B", size=2.5) +
+  ggrepel::geom_text_repel(data=subset(cc, gene %in% markers8), aes(label=gene),
+                           fontface="italic", size=3) +
+  labs(x="Female injury logFC", y="Male injury logFC",
+       title=sprintf("Shared injury response across sexes (r = %.2f)", r_conc)) +
+  theme_bw(base_size=11)
+dev.off()
+
+## genome-wide interaction counts (report)
+intF <- fit_by_sex("F", ~ genotype*condition)
+intM <- fit_by_sex("M", ~ genotype*condition)
+icoef <- grep("genotypeKO:conditionIRI", colnames(intF$coefficients), value=TRUE)
+cat(sprintf("KOxIRI interaction FDR<0.05: F=%d M=%d\n",
+            sum(topTable(intF,coef=icoef,number=Inf)$adj.P.Val<0.05),
+            sum(topTable(intM,coef=icoef,number=Inf)$adj.P.Val<0.05)))
+
+
+# ## Per-sex, per-genotype marker violins (per-sample expression)
+
+
+# ********************************************************************************
+# ---- fig-violins ----
+# ********************************************************************************
+gid <- unlist(sym2id[markers8]); gid <- gid[gid %in% rownames(counts_f)]
+vl <- as.data.frame(as.table(as.matrix(logcpm[gid, ])))
+colnames(vl) <- c("gene_id","sample","logcpm"); vl$gene <- id2sym[as.character(vl$gene_id)]
+vl <- merge(vl, sheet[,c("sample_id","sex","genotype","condition")],
+            by.x="sample", by.y="sample_id")
+vl$grp <- factor(paste(vl$genotype, vl$condition, sep="_"),
+                 levels=c("WT_CON","KO_CON","WT_IRI","KO_IRI"))
+vl$gene <- factor(vl$gene, levels = markers8)
+vl$panel <- paste0(sex_lab[as.character(vl$sex)])
+png(file.path(figdir, "marker_violins.png"), width = 12, height = 9, units="in", res=300)
+ggplot(vl, aes(grp, logcpm, fill = grp)) +
+  geom_violin(alpha = 0.25, color = NA, scale = "width") +
+  geom_jitter(width = 0.12, size = 1, shape = 21) +
+  stat_summary(fun = mean, geom = "crossbar", width = 0.5, linewidth = 0.3) +
+  facet_grid(sex ~ gene, scales = "free_y", labeller = labeller(sex = sex_lab)) +
+  scale_fill_manual(values=c(WT_CON="#B9C4D0",KO_CON="#8A99AD",
+                             WT_IRI="#E8A552",KO_IRI="#C0392B"), guide="none") +
+  labs(x=NULL, y="log2 CPM",
+       title="JAK/STAT marker expression by group (points = animals; bar = mean)") +
+  theme_bw(base_size=10) +
+  theme(axis.text.x=element_text(angle=45,hjust=1,size=6),
+        strip.text=element_text(face="bold"))
+dev.off()
+
+
+# ## M_KO vs M_WT volcano (clean genotype comparison) + Mir17hg validation
+
+
+# ********************************************************************************
+# ---- fig-mko-mwt ----
+# ********************************************************************************
+## within-male genotype contrast (same sex + dose): limma-voom
+sM <- droplevels(sheet[sheet$sex == "M", ])
+dgeM <- calcNormFactors(DGEList(counts_f[, rownames(sM)]))
+desM <- model.matrix(~ genotype, data = sM)     # overall KO vs WT in males
+vM   <- voom(dgeM, desM); fitM <- eBayes(lmFit(vM, desM))
+ttKO <- topTable(fitM, coef = "genotypeKO", number = Inf)
+ttKO$gene <- id2sym[rownames(ttKO)]; ttKO$sig <- ttKO$adj.P.Val < 0.05
+cat("M_KO vs M_WT genes FDR<0.05:", sum(ttKO$sig), "\n")
+print(head(ttKO[ttKO$sig, c("gene","logFC","adj.P.Val")], 10))
+
+png(file.path(figdir, "MKO_vs_MWT_volcano.png"), width = 7, height = 6, units="in", res=300)
+ggplot(ttKO, aes(logFC, -log10(P.Value))) +
+  geom_point(aes(color = sig), size = 0.6, alpha = 0.4) +
+  geom_point(data = subset(ttKO, sig), color = "#C0392B", size = 3) +
+  ggrepel::geom_text_repel(data = subset(ttKO, sig), aes(label = gene),
+                           fontface = "italic", size = 4) +
+  scale_color_manual(values = c(`TRUE`="#C0392B",`FALSE`="grey80"), guide="none") +
+  labs(x = "log2 FC (M_KO \u2212 M_WT)", y = "-log10 p",
+       title = "Differential expression between Mir17hg-KO and WT\nmale proximal tubule") +
+  theme_bw(base_size = 12) + theme(plot.title = element_text(face="bold"))
+dev.off()
+
+## Mir17hg validation across the four groups, both sexes
+mir <- sym2id[["Mir17hg"]][1]
+mv <- data.frame(logcpm = logcpm[mir, ], sheet[, c("sex","genotype","condition")])
+mv$grp <- factor(paste(mv$genotype, mv$condition, sep="_"),
+                 levels=c("WT_CON","KO_CON","WT_IRI","KO_IRI"))
+png(file.path(figdir, "Mir17hg_validation.png"), width = 9, height = 5, units="in", res=300)
+ggplot(mv, aes(grp, logcpm)) +
+  geom_jitter(aes(fill = grp), width = 0.12, size = 2.5, shape = 21) +
+  stat_summary(fun = mean, geom = "crossbar", width = 0.5, linewidth = 0.4) +
+  facet_wrap(~ sex, labeller = as_labeller(sex_lab)) +
+  scale_fill_manual(values=c(WT_CON="#B9C4D0",KO_CON="#8A99AD",
+                             WT_IRI="#E8A552",KO_IRI="#C0392B"), guide="none") +
+  labs(x=NULL, y="Mir17hg  log2 CPM",
+       title="Mir17hg host transcript accumulates in KO (genotype validation)") +
+  theme_bw(base_size=12) + theme(strip.text=element_text(face="bold"))
+dev.off()
+
+
+# ## Everything relative to M_WT (markers + genome-wide), confound-aware
+
+
+# ********************************************************************************
+# ---- fig-vs-mwt ----
+# ********************************************************************************
+grp_cols <- function(g) rownames(sheet)[sheet$group == g]
+ref <- grp_cols("M_WT")
+comp_marker <- function(g) {
+  sapply(markers8, function(mk){
+    gid <- sym2id[[mk]][1]
+    v <- logcpm[gid, grp_cols(g)]; r <- logcpm[gid, ref]
+    c(diff = mean(v) - mean(r), p = t.test(v, r)$p.value)
+  })
+}
+## build long table for a grouped bar
+bars <- do.call(rbind, lapply(c("M_KO","F_WT","F_KO"), function(g){
+  cm <- comp_marker(g)
+  data.frame(gene = markers8, comparison = g,
+             diff = cm["diff", ], p = cm["p", ])
+}))
+bars$padj <- p.adjust(bars$p, "BH")
+bars$comparison <- factor(bars$comparison, levels = c("M_KO","F_WT","F_KO"))
+bars$gene <- factor(bars$gene, levels = rev(markers8))
+png(file.path(figdir, "markers_vs_MWT.png"), width = 9, height = 6.5, units="in", res=300)
+ggplot(bars, aes(diff, gene, fill = comparison)) +
+  geom_col(position = position_dodge(0.7), width = 0.65, color = "black", linewidth = 0.2) +
+  geom_vline(xintercept = 0) +
+  geom_text(data = subset(bars, padj < 0.05),
+            aes(label = "*"), position = position_dodge(0.7), hjust = -0.2) +
+  scale_fill_manual(values = c(M_KO = "#2E7D32", F_WT = "#B0752E", F_KO = "#7A3EA6"),
+                    labels = c("M_KO vs M_WT (within-sex)",
+                               "F_WT vs M_WT (cross-sex)",
+                               "F_KO vs M_WT (cross-sex)")) +
+  labs(x = "Mean log2-CPM difference from M_WT", y = NULL,
+       title = "JAK/STAT marker expression relative to WT males") +
+  theme_bw(base_size = 11) +
+  theme(axis.text.y = element_text(face = "italic"),
+        legend.position = "bottom", legend.title = element_blank())
+dev.off()
+
+## genome-wide counts vs M_WT (Welch t + BH), for the bar of 2 vs ~10k
+gw_vs_ref <- function(g){
+  A <- logcpm[, grp_cols(g)]; B <- logcpm[, ref]
+  p <- apply(cbind(A, B), 1, function(x)
+    tryCatch(t.test(x[seq_len(ncol(A))], x[-(seq_len(ncol(A)))])$p.value, error=function(e) NA))
+  sum(p.adjust(p, "BH") < 0.05, na.rm = TRUE)
+}
+gwc <- sapply(c("M_KO","F_WT","F_KO"), gw_vs_ref)
+cat("Genes differing from M_WT (FDR<0.05):\n"); print(gwc)   #>> expect ~2 for M_KO
+
+
+
+
+# ********************************************************************************
+# ---- fig-vs-Fwt ----
+# ********************************************************************************
+grp_cols <- function(g) rownames(sheet)[sheet$group == g]
+ref <- grp_cols("F_WT")
+comp_marker <- function(g) {
+  sapply(markers8, function(mk){
+    gid <- sym2id[[mk]][1]
+    v <- logcpm[gid, grp_cols(g)]; r <- logcpm[gid, ref]
+    c(diff = mean(v) - mean(r), p = t.test(v, r)$p.value)
+  })
+}
+## build long table for a grouped bar
+bars <- do.call(rbind, lapply(c("M_KO","M_WT","F_KO"), function(g){
+  cm <- comp_marker(g)
+  data.frame(gene = markers8, comparison = g,
+             diff = cm["diff", ], p = cm["p", ])
+}))
+bars$padj <- p.adjust(bars$p, "BH")
+bars$comparison <- factor(bars$comparison, levels = c("M_KO","M_WT","F_KO"))
+bars$gene <- factor(bars$gene, levels = rev(markers8))
+png(file.path(figdir, "markers_vs_FWT.png"), width = 9, height = 6.5, units="in", res=300)
+ggplot(bars, aes(diff, gene, fill = comparison)) +
+  geom_col(position = position_dodge(0.7), width = 0.65, color = "black", linewidth = 0.2) +
+  geom_vline(xintercept = 0) +
+  geom_text(data = subset(bars, padj < 0.05),
+            aes(label = "*"), position = position_dodge(0.7), hjust = -0.2) +
+  scale_fill_manual(values = c(M_KO = "#2E7D32", M_WT = "#B0752E", F_KO = "#7A3EA6"),
+                    labels = c("M_KO vs M_WT (within-sex)",
+                               "M_WT vs F_WT (cross-sex)",
+                               "F_KO vs M_WT (cross-sex)")) +
+  labs(x = "Mean log2-CPM difference from M_WT", y = NULL,
+       title = "JAK/STAT marker expression relative to WT males") +
+  theme_bw(base_size = 11) +
+  theme(axis.text.y = element_text(face = "italic"),
+        legend.position = "bottom", legend.title = element_blank())
+dev.off()
+
+## genome-wide counts vs F_WT (Welch t + BH), for the bar of 2 vs ~10k
+gw_vs_ref <- function(g){
+  A <- logcpm[, grp_cols(g)]; B <- logcpm[, ref]
+  p <- apply(cbind(A, B), 1, function(x)
+    tryCatch(t.test(x[seq_len(ncol(A))], x[-(seq_len(ncol(A)))])$p.value, error=function(e) NA))
+  sum(p.adjust(p, "BH") < 0.05, na.rm = TRUE)
+}
+gwc <- sapply(c("M_KO","M_WT","F_KO"), gw_vs_ref)
+cat("Genes differing from F_WT (FDR<0.05):\n"); print(gwc)   #>> expect ~2 for M_KO
+
+
+# ## Lipid/sterol program vs severity (REAL GSVA; 083 SCr = NA, 231 dropped)
+
+
+# ********************************************************************************
+# ---- fig-lipid-severity ----
+# ********************************************************************************
+lipid_sets <- c("HALLMARK_FATTY_ACID_METABOLISM","HALLMARK_CHOLESTEROL_HOMEOSTASIS",
+                "REACTOME_CHOLESTEROL_BIOSYNTHESIS","REACTOME_FATTY_ACID_METABOLISM",
+                "WP_CYTOCHROME_P450","KEGG_MEDICUS_REFERENCE_PPAR_SIGNALING_PATHWAY")
+present <- lipid_sets[lipid_sets %in% allsets$gs_name]
+lipid_genes <- unique(unlist(sym2id[unique(allsets$gene_symbol[allsets$gs_name %in% present])]))
+lipid_genes <- intersect(lipid_genes, rownames(counts_f))
+lscore <- gsva(gsvaParam(logcpm, list(lipid = lipid_genes), kcdf="Gaussian"))
+sheet$lipid <- as.numeric(lscore["lipid", rownames(sheet)])
+
+iri <- sheet[sheet$condition == "IRI" & !is.na(sheet$scr), ]
+cat("Injured kidneys with SCr (083 excluded):", nrow(iri), "\n")
+for (sx in c("F","M")) { d <- iri[iri$sex==sx, ]
+if (nrow(d) >= 4) cat(sprintf("  %s r(lipid,scr)=%.2f\n", sx, cor(d$scr, d$lipid))) }
+print(summary(lm(lipid ~ scr + sex, data = iri))$coefficients)
+
+png(file.path(figdir, "lipid_vs_severity.png"), width = 8, height = 6, units="in", res=300)
+ggplot(iri, aes(scr, lipid, color = sex, shape = genotype)) +
+  geom_smooth(aes(group = sex), method = "lm", se = FALSE, linewidth = 0.6) +
+  geom_point(size = 3) +
+  scale_color_manual(values = c(F="#993C1D", M="#185FA5")) +
+  labs(x = "Serum creatinine (mg/dL)", y = "Lipid/sterol program score (GSVA)",
+       title = "Lipid/sterol suppression vs injury severity") +
+  theme_minimal(base_size = 12)
+dev.off()
+
+
+# ********************************************************************************
+# ---- fig-fgsea ----
+# ********************************************************************************
+## per-group paired IRI vs CON (limma-voom) -> rank by t -> fgsea
+cp <- c("CP:KEGG_MEDICUS","CP:KEGG_LEGACY","CP:REACTOME","CP:WIKIPATHWAYS")
+m2cp <- m2[m2$gs_subcollection %in% cp, ]
+gs_df <- rbind(mh[,c("gs_name","gene_symbol")], m2cp[,c("gs_name","gene_symbol")])
+pathways <- split(gs_df$gene_symbol, gs_df$gs_name)
+group_rank <- function(g) {
+  s <- droplevels(sheet[sheet$group == g, ])
+  tab <- table(s$animal, s$condition)
+  pa  <- rownames(tab)[tab[,"CON"] > 0 & tab[,"IRI"] > 0]
+  s <- s[s$animal %in% pa, ]; s$animal <- droplevels(s$animal)
+  if (nlevels(s$condition) < 2) return(NULL)
+  dge <- normLibSizes(DGEList(counts_f[, rownames(s)]))
+  des <- model.matrix(~ animal + condition, data = s)
+  v <- voom(dge, des); fit <- eBayes(lmFit(v, des))
+  tt <- topTable(fit, coef = "conditionIRI", number = Inf)
+  r  <- tt$t
+  nm <- id2sym[rownames(tt)]
+  ok <- !is.na(nm) & nm != "" & !duplicated(nm)
+  r  <- r[ok]; names(r) <- nm[ok]
+  r  <- r[is.finite(r)]
+  sort(r, decreasing = TRUE)
+}
+groups <- c("F_WT","F_KO","M_WT","M_KO")
+gsea <- lapply(setNames(groups, groups), function(g){
+  r <- group_rank(g); if (is.null(r)) return(NULL)
+  x <- fgsea(pathways, r, minSize=10, maxSize=500); x$group <- g; x })
+allg <- do.call(rbind, lapply(gsea, function(x) x[,c("group","pathway","NES","padj","size")]))
+top_per <- unique(unlist(lapply(gsea, function(x){ x<-x[x$padj<0.05,]; head(x$pathway[order(x$padj)],10)})))
+disp <- allg[allg$pathway %in% top_per, ]
+disp$group <- factor(disp$group, levels = groups)
+
+## ---- labels + plot (single version) ----
+library(stringr)
+disp$lab <- gsub("_"," ", sub("^(HALLMARK|KEGG_MEDICUS|KEGG_LEGACY|KEGG|REACTOME|WP)_","", disp$pathway))
+disp$lab <- ifelse(nchar(disp$lab) > 60, paste0(substr(disp$lab, 1, 57), "..."), disp$lab)
+disp$lab <- str_wrap(disp$lab, width = 34)
+
+png(file.path(figdir, "fgsea_dotplot.png"), width = 9, height = 8.5, units = "in", res = 300)
+ggplot(disp, aes(group, reorder(lab, NES))) +
+  geom_point(aes(size = -log10(padj + 1e-300), fill = NES),
+             shape = 21, color = "grey30") +
+  scale_fill_gradient2(low = bwy_gg["low"], mid = bwy_gg["mid"],
+                       high = bwy_gg["high"], midpoint = 0) +
+  scale_size_continuous(range = c(1, 7)) +
+  scale_x_discrete(drop = FALSE) +
+  labs(x = NULL, y = NULL, title = "IRI vs CON pathway enrichment by group") +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.y = element_text(size = 7, lineheight = 0.85),
+        panel.grid.major.x = element_line(color = "grey90"))
+dev.off()
+
+
+
+
+# ********************************************************************************
+# ---- fig-session ----
+# ********************************************************************************
+writeLines(capture.output(sessionInfo()), file.path(figdir, "sessionInfo.txt"))
+cat("All figures written to", figdir, "\n")
+
