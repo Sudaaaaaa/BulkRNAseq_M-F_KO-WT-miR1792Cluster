@@ -1,0 +1,36 @@
+# QC: sample-sample correlation + top-variable-gene heatmap
+counts_all <- counts[rowSums(counts >= 10) >= 3, ]
+logcpm_all <- log2(sweep(counts_all, 2, colSums(counts_all), "/") * 1e6 + 1)
+sheet_all  <- read.csv(file.path(proj, "sample_sheet.csv"),
+                       colClasses = c(animal="character"))
+rownames(sheet_all) <- sheet_all$sample_id
+sheet_all <- sheet_all[colnames(logcpm_all), ]
+
+v  <- apply(logcpm_all, 1, var)
+hv <- names(sort(v, decreasing = TRUE))[1:2000]
+cormat <- cor(logcpm_all[hv, ]); 
+rownames(cormat) <- colnames(cormat) <- sheet_all$label
+
+ann_cols <- list(
+  sex       = c(F="#8B2E2E", M="#1F4E79"),
+  condition = c(CON="#8FD9C0", IRI="#8B2E2E"),
+  genotype  = c(WT="#B4B2A9", KO="#444441"))
+flags <- sort(unique(sheet_all$qc_flag)); other <- setdiff(flags, "ok")
+ann_cols$qc_flag <- setNames(c(if ("ok" %in% flags) "grey85",
+                               hue_pal()(length(other))),
+                             c(if ("ok" %in% flags) "ok", other))
+top_ann <- HeatmapAnnotation(df = sheet_all[, c("sex","condition","genotype","qc_flag")],
+                             col = ann_cols,
+                             annotation_name_gp = gpar(fontsize = 8))
+
+png(file.path(figdir, "QC_correlation.png"), width = 11, height = 10, units="in", res=300)
+draw(Heatmap(cormat, name = "Pearson r",
+             col = colorRamp2(c(min(cormat),(min(cormat)+1)/2,1),
+                              c("#3A5FCD","#F2F2F2","#E8A000")),
+             top_annotation = top_ann,
+             show_row_names = TRUE, show_column_names = FALSE,
+             row_names_gp = gpar(fontsize = 6),
+             column_title = sprintf("Sample-sample correlation (top 2000 var genes); median r = %.3f",
+                                    median(cormat[lower.tri(cormat)]))),
+     merge_legend = TRUE)
+dev.off()
