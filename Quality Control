@@ -34,3 +34,14 @@ draw(Heatmap(cormat, name = "Pearson r",
                                     median(cormat[lower.tri(cormat)]))),
      merge_legend = TRUE)
 dev.off()
+
+tv  <- names(sort(v, decreasing = TRUE))[1:40]
+mat <- t(scale(t(logcpm_all[tv, ])))
+rownames(mat) <- ifelse(is.na(id2sym[tv]) | id2sym[tv]=="", tv, id2sym[tv])
+colnames(mat) <- sheet_all$label
+png(file.path(figdir, "QC_topvariable.png"), width = 11, height = 10, units="in", res=300)
+draw(Heatmap(mat, name = "z-score", col = bwy, top_annotation = top_ann,
+             show_column_names = FALSE, row_names_gp = gpar(fontsize = 7),
+             column_title = "Top 40 most-variable genes (z-scored)"),
+     merge_legend = TRUE)
+dev.off()
