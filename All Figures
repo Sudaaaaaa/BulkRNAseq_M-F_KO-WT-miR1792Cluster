@@ -1,6 +1,6 @@
 
 #Pipeline: GSVA + limma, fgsea, ComplexHeatmap)
-# low-depth technical failure F-IRI-231-KO dropped from expression analyses.
+#low-depth technical failure F-IRI-231-KO dropped from expression analyses.
 
 proj <- "~/R/KO_RNASeq"
 figdir <- file.path(proj, "figures_final")
@@ -13,9 +13,6 @@ counts    <- as.matrix(em[, cnt_cols]); storage.mode(counts) <- "integer"
 rownames(counts) <- em$gene_id
 colnames(counts) <- sub("_count$", "", cnt_cols)
 
-# ********************************************************************************
-# ---- fig-setup ----
-# ********************************************************************************
 suppressPackageStartupMessages({
   library(edgeR); library(limma); library(GSVA); library(msigdbr)
   library(fgsea); library(ComplexHeatmap); library(circlize); library(grid)
@@ -39,14 +36,14 @@ sheet$condition <- factor(sheet$condition, levels = c("CON","IRI"))
 sheet$animal    <- factor(sheet$animal)
 sheet$group     <- factor(paste(sheet$sex, sheet$genotype, sep = "_"))
 
-## expression filter (>=10 counts in >=3 samples) + log2-CPM
+#expression filter (>=10 counts in >=3 samples) + log2-CPM
 counts_f <- counts_f[rowSums(counts_f >= 10) >= 3, ]
 logcpm   <- log2(sweep(counts_f, 2, colSums(counts_f), "/") * 1e6 + 1)
 
 sym2id <- split(gene_meta$gene_id, gene_meta$gene_name)
 id2sym <- setNames(gene_meta$gene_name, gene_meta$gene_id)
 
-## shared palette (blue-grey-yellow) used across figures
+#shared palette (blue-grey-yellow) used across figures
 bwy      <- colorRamp2(c(-2, 0, 2), c("#3A5FCD", "#F2F2F2", "#E8A000"))
 bwy_gg   <- c(low = "#3A5FCD", mid = "#F2F2F2", high = "#E8A000")
 sex_lab  <- c(F = "Female (22 min IRI)", M = "Male (20 min IRI)")
@@ -56,9 +53,7 @@ cat("Samples after dropping 231:", ncol(counts_f), "\n")
 print(table(sheet$group, sheet$condition))
 
 
-# ## PCA (sex = PC1, injury = PC2)
-
-
+###PCA (sex = PC1, injury = PC2)
 # ********************************************************************************
 # ---- fig-pca ----
 # ********************************************************************************
@@ -84,10 +79,7 @@ ggplot(dfp, aes(PC1, PC2, color = condition, shape = sex)) +
 dev.off()
 
 
-# ## QC: sample-sample correlation + top-variable-gene heatmap
-
-
-
+###QC: sample-sample correlation + top-variable-gene heatmap
 # ********************************************************************************
 # ---- fig-qc ----
 # ********************************************************************************
@@ -141,9 +133,7 @@ draw(Heatmap(mat, name = "z-score", col = bwy, top_annotation = top_ann,
 dev.off()
 
 
-# ## JAK/STAT 8-marker heatmap (z within sex, group means)
-
-
+### JAK/STAT 8-marker heatmap (z within sex, group means)
 # ********************************************************************************
 # ---- fig-marker-heatmap ----
 # ********************************************************************************
@@ -175,9 +165,7 @@ ggplot(hm, aes(grp, gene, fill = z)) +
 dev.off()
 
 
-# ## GSVA 7-arm heatmap + per-sex KOxIRI interaction (REAL GSVA)
-
-
+### GSVA 7 heatmap + per-sex KOxIRI interaction
 # ********************************************************************************
 # ---- fig-gsva-arms ----
 # ********************************************************************************
@@ -197,7 +185,6 @@ sets_id <- lapply(panel, function(nm)
             rownames(counts_f)))
 scores <- gsva(gsvaParam(logcpm, sets_id, kcdf="Gaussian"))
 
-## interaction per sex (blocked on animal) -- the values of record
 test_one_sex <- function(sx) {
   cols <- sheet$sex == sx; s <- droplevels(sheet[cols, ])
   d  <- model.matrix(~ genotype * condition, data = s)
@@ -213,7 +200,7 @@ arm_res <- rbind(test_one_sex("F"), test_one_sex("M"))
 write.csv(arm_res, file.path(figdir, "GSVA_arm_interaction.csv"), row.names = FALSE)
 print(arm_res)
 
-## heatmap of arm scores (z within sex, group means)
+#heatmap of arm scores (z within sex, group means)
 sc_long <- as.data.frame(as.table(as.matrix(scores)))
 colnames(sc_long) <- c("arm","sample","gsva")
 sc_long <- merge(sc_long, sheet[,c("sample_id","sex","genotype","condition")],
@@ -239,9 +226,7 @@ ggplot(hmA, aes(grp, arm, fill = z)) +
 dev.off()
 
 
-# ## Per-gene arm heatmap (ComplexHeatmap; REAL MSigDB top-25/arm)
-
-
+### Per-gene STAT heatmap (ComplexHeatmap; REAL MSigDB top-25 STAT
 # ********************************************************************************
 # ---- fig-pergene ----
 # ********************************************************************************
@@ -291,9 +276,7 @@ draw(hF + hM, ht_gap=unit(6,"mm"),
 dev.off()
 
 
-# ## Genome-wide KOxIRI interaction + per-sex injury DEG (limma-voom, blocked)
-
-
+### Genome-wide KOxIRI interaction + per-sex injury DEG (limma-voom, blocked)
 # ********************************************************************************
 # ---- fig-interaction-injury ----
 # ********************************************************************************
@@ -307,7 +290,7 @@ fit_by_sex <- function(sx, formula) {
   dc <- duplicateCorrelation(v, design, block = s$animal)
   eBayes(lmFit(v, design, block = s$animal, correlation = dc$consensus))
 }
-## injury DEG (IRI vs CON) per sex
+#injury DEG (IRI vs CON) per sex
 injF <- fit_by_sex("F", ~ condition); injM <- fit_by_sex("M", ~ condition)
 ttF <- topTable(injF, coef="conditionIRI", number=Inf); ttF$gene <- id2sym[rownames(ttF)]
 ttM <- topTable(injM, coef="conditionIRI", number=Inf); ttM$gene <- id2sym[rownames(ttM)]
@@ -316,7 +299,7 @@ r_conc <- cor(ttF[common,"logFC"], ttM[common,"logFC"])
 cat(sprintf("Injury DEG FDR<0.05: F=%d M=%d ; concordance r=%.3f\n",
             sum(ttF$adj.P.Val<0.05), sum(ttM$adj.P.Val<0.05), r_conc))
 
-## volcano per sex, JAK/STAT markers labeled
+#volcano per sex, JAK/STAT markers labeled
 mk_id <- unlist(sym2id[markers8])
 volc <- function(tt, title) {
   tt$sig <- tt$adj.P.Val < 0.05
@@ -349,7 +332,7 @@ ggplot(cc, aes(F, M)) +
   theme_bw(base_size=11)
 dev.off()
 
-## genome-wide interaction counts (report)
+#genome-wide interaction counts (report)
 intF <- fit_by_sex("F", ~ genotype*condition)
 intM <- fit_by_sex("M", ~ genotype*condition)
 icoef <- grep("genotypeKO:conditionIRI", colnames(intF$coefficients), value=TRUE)
@@ -358,9 +341,7 @@ cat(sprintf("KOxIRI interaction FDR<0.05: F=%d M=%d\n",
             sum(topTable(intM,coef=icoef,number=Inf)$adj.P.Val<0.05)))
 
 
-# ## Per-sex, per-genotype marker violins (per-sample expression)
-
-
+### Per-sex, per-genotype marker violins (per-sample expression)
 # ********************************************************************************
 # ---- fig-violins ----
 # ********************************************************************************
@@ -389,13 +370,11 @@ ggplot(vl, aes(grp, logcpm, fill = grp)) +
 dev.off()
 
 
-# ## M_KO vs M_WT volcano (clean genotype comparison) + Mir17hg validation
-
-
+### M_KO vs M_WT volcano (clean genotype comparison) + Mir17hg validation
 # ********************************************************************************
 # ---- fig-mko-mwt ----
 # ********************************************************************************
-## within-male genotype contrast (same sex + dose): limma-voom
+#within-male genotype contrast (same sex + dose): limma-voom
 sM <- droplevels(sheet[sheet$sex == "M", ])
 dgeM <- calcNormFactors(DGEList(counts_f[, rownames(sM)]))
 desM <- model.matrix(~ genotype, data = sM)     # overall KO vs WT in males
@@ -417,7 +396,7 @@ ggplot(ttKO, aes(logFC, -log10(P.Value))) +
   theme_bw(base_size = 12) + theme(plot.title = element_text(face="bold"))
 dev.off()
 
-## Mir17hg validation across the four groups, both sexes
+#Mir17hg validation across the four groups, both sexes
 mir <- sym2id[["Mir17hg"]][1]
 mv <- data.frame(logcpm = logcpm[mir, ], sheet[, c("sex","genotype","condition")])
 mv$grp <- factor(paste(mv$genotype, mv$condition, sep="_"),
@@ -435,9 +414,7 @@ ggplot(mv, aes(grp, logcpm)) +
 dev.off()
 
 
-# ## Everything relative to M_WT (markers + genome-wide), confound-aware
-
-
+###Relative to M_WT (markers + genome-wide)
 # ********************************************************************************
 # ---- fig-vs-mwt ----
 # ********************************************************************************
@@ -476,7 +453,7 @@ ggplot(bars, aes(diff, gene, fill = comparison)) +
         legend.position = "bottom", legend.title = element_blank())
 dev.off()
 
-## genome-wide counts vs M_WT (Welch t + BH), for the bar of 2 vs ~10k
+#genome-wide counts vs M_WT (Welch t + BH), for the bar of 2 vs ~10k
 gw_vs_ref <- function(g){
   A <- logcpm[, grp_cols(g)]; B <- logcpm[, ref]
   p <- apply(cbind(A, B), 1, function(x)
@@ -488,7 +465,7 @@ cat("Genes differing from M_WT (FDR<0.05):\n"); print(gwc)   #>> expect ~2 for M
 
 
 
-
+###Relative to F_WT (markers + genome-wide)
 # ********************************************************************************
 # ---- fig-vs-Fwt ----
 # ********************************************************************************
@@ -501,7 +478,7 @@ comp_marker <- function(g) {
     c(diff = mean(v) - mean(r), p = t.test(v, r)$p.value)
   })
 }
-## build long table for a grouped bar
+
 bars <- do.call(rbind, lapply(c("M_KO","M_WT","F_KO"), function(g){
   cm <- comp_marker(g)
   data.frame(gene = markers8, comparison = g,
@@ -527,7 +504,7 @@ ggplot(bars, aes(diff, gene, fill = comparison)) +
         legend.position = "bottom", legend.title = element_blank())
 dev.off()
 
-## genome-wide counts vs F_WT (Welch t + BH), for the bar of 2 vs ~10k
+#genome-wide counts vs F_WT (Welch t + BH), for the bar of 2 vs ~10k
 gw_vs_ref <- function(g){
   A <- logcpm[, grp_cols(g)]; B <- logcpm[, ref]
   p <- apply(cbind(A, B), 1, function(x)
@@ -538,9 +515,7 @@ gwc <- sapply(c("M_KO","M_WT","F_KO"), gw_vs_ref)
 cat("Genes differing from F_WT (FDR<0.05):\n"); print(gwc)   #>> expect ~2 for M_KO
 
 
-# ## Lipid/sterol program vs severity (REAL GSVA; 083 SCr = NA, 231 dropped)
-
-
+### Lipid/sterol program vs severity (REAL GSVA; 083 SCr = NA, 231 dropped)
 # ********************************************************************************
 # ---- fig-lipid-severity ----
 # ********************************************************************************
