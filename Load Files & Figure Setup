@@ -1,0 +1,52 @@
+proj <- "~/R/KO_RNASeq"
+figdir <- file.path(proj, "figures_final")
+dir.create(figdir, showWarnings = FALSE)
+em <- read.delim(file.path(proj, "C5KKZF-expression-matrix.tsv"),
+                 check.names = FALSE)
+gene_meta <- em[, c("gene_id","gene_name","gene_biotype")]
+cnt_cols  <- grep("_count$", colnames(em), value = TRUE)
+counts    <- as.matrix(em[, cnt_cols]); storage.mode(counts) <- "integer"
+rownames(counts) <- em$gene_id
+colnames(counts) <- sub("_count$", "", cnt_cols)
+
+
+suppressPackageStartupMessages({
+  library(edgeR); library(limma); library(GSVA); library(msigdbr)
+  library(fgsea); library(ComplexHeatmap); library(circlize); library(grid)
+  library(ggplot2); library(dplyr); library(tidyr); library(tibble); library(scales)
+})
+
+proj <- "~/R/KO_RNASeq"          #>> CHECK path
+figdir <- file.path(proj, "figures_final")
+dir.create(figdir, showWarnings = FALSE)
+
+sheet <- read.csv(file.path(proj, "sample_sheet.csv"),
+                  colClasses = c(animal = "character"))
+rownames(sheet) <- sheet$sample_id
+drop_ids <- rownames(sheet)[sheet$label == "F-IRI-231-KO"]
+keep_ids <- setdiff(colnames(counts), drop_ids)
+counts_f <- counts[, keep_ids]
+sheet    <- sheet[keep_ids, ]
+
+## factors with explicit reference levels
+sheet$sex       <- factor(sheet$sex,       levels = c("F","M"))
+sheet$genotype  <- factor(sheet$genotype,  levels = c("WT","KO"))
+sheet$condition <- factor(sheet$condition, levels = c("CON","IRI"))
+sheet$animal    <- factor(sheet$animal)
+sheet$group     <- factor(paste(sheet$sex, sheet$genotype, sep = "_"))
+
+## expression filter (>=10 counts in >=3 samples) + log2-CPM
+counts_f <- counts_f[rowSums(counts_f >= 10) >= 3, ]
+logcpm   <- log2(sweep(counts_f, 2, colSums(counts_f), "/") * 1e6 + 1)
+
+sym2id <- split(gene_meta$gene_id, gene_meta$gene_name)
+id2sym <- setNames(gene_meta$gene_name, gene_meta$gene_id)
+
+## shared palette (blue-grey-yellow) used across figures
+bwy      <- colorRamp2(c(-2, 0, 2), c("#3A5FCD", "#F2F2F2", "#E8A000"))
+bwy_gg   <- c(low = "#3A5FCD", mid = "#F2F2F2", high = "#E8A000")
+sex_lab  <- c(F = "Female (22 min IRI)", M = "Male (20 min IRI)")
+markers8 <- c("Jak2","Jak1","Il6ra","Il6st","Stat3","Il6","Lcn2","Havcr1")
+
+cat("Samples after dropping 231:", ncol(counts_f), "\n")
+print(table(sheet$group, sheet$condition))
