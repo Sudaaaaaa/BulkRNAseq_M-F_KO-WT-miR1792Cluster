@@ -1,0 +1,56 @@
+panel <- list(
+  IFN_STAT1     = "HALLMARK_INTERFERON_GAMMA_RESPONSE",
+  STAT1_targets = "BAKER_HEMATOPOESIS_STAT1_TARGETS",
+  IL6_JAK_STAT3 = "HALLMARK_IL6_JAK_STAT3_SIGNALING",
+  IL6_signaling = "WP_IL6_SIGNALING_PATHWAY",
+  STAT3_targets = "BAKER_HEMATOPOIESIS_STAT3_TARGETS",
+  IL2_STAT5     = "HALLMARK_IL2_STAT5_SIGNALING",
+  STAT5_targets = "BAKER_HEMATOPOESIS_STAT5_TARGETS")
+mh <- msigdbr(db_species="MM", species="Mus musculus", collection="MH")
+m2 <- msigdbr(db_species="MM", species="Mus musculus", collection="M2")
+allsets <- rbind(mh[,c("gs_name","gene_symbol")], m2[,c("gs_name","gene_symbol")])
+sets_id <- lapply(panel, function(nm)
+  intersect(unique(unlist(sym2id[unique(allsets$gene_symbol[allsets$gs_name==nm])])),
+            rownames(counts_f)))
+scores <- gsva(gsvaParam(logcpm, sets_id, kcdf="Gaussian"))
+
+## interaction per sex (blocked on animal) -- the values of record
+test_one_sex <- function(sx) {
+  cols <- sheet$sex == sx; s <- droplevels(sheet[cols, ])
+  d  <- model.matrix(~ genotype * condition, data = s)
+  ic <- grep("genotypeKO:conditionIRI", colnames(d), value = TRUE)
+  dc <- duplicateCorrelation(scores[, cols], d, block = s$animal)
+  fit<- eBayes(lmFit(scores[, cols], d, block = s$animal, correlation = dc$consensus))
+  data.frame(sex = sx, arm = rownames(scores),
+             KOxIRI = round(fit$coefficients[, ic], 3),
+             p = signif(fit$p.value[, ic], 2),
+             padj = signif(p.adjust(fit$p.value[, ic], "BH"), 2))
+}
+arm_res <- rbind(test_one_sex("F"), test_one_sex("M"))
+write.csv(arm_res, file.path(figdir, "GSVA_arm_interaction.csv"), row.names = FALSE)
+print(arm_res)
+
+sc_long <- as.data.frame(as.table(as.matrix(scores)))
+colnames(sc_long) <- c("arm","sample","gsva")
+sc_long <- merge(sc_long, sheet[,c("sample_id","sex","genotype","condition")],
+                 by.x="sample", by.y="sample_id")
+sc_long <- sc_long |> group_by(sex, arm) |>
+  mutate(z = as.numeric(scale(gsva))) |> ungroup()
+sc_long$grp <- factor(paste(sc_long$genotype, sc_long$condition, sep="_"),
+                      levels=c("WT_CON","KO_CON","WT_IRI","KO_IRI"))
+arm_order <- rev(names(panel))
+sc_long$arm <- factor(sc_long$arm, levels = arm_order)
+hmA <- sc_long |> group_by(sex, arm, grp) |> summarise(z=mean(z), .groups="drop")
+
+png(file.path(figdir, "GSVA_arms_heatmap.png"), width = 7.5, height = 4.2, units="in", res=300)
+ggplot(hmA, aes(grp, arm, fill = z)) +
+  geom_tile(color="grey30", linewidth=0.5) +
+  facet_wrap(~ sex, labeller = as_labeller(sex_lab)) +
+  scale_fill_gradient2(low=bwy_gg["low"], mid=bwy_gg["mid"], high=bwy_gg["high"],
+                       midpoint=0, name="z-score\n(within sex)") +
+  labs(x=NULL, y=NULL, title="JAK/STAT arms: injury response by genotype") +
+  theme_minimal(base_size=11) +
+  theme(axis.text.x=element_text(angle=45,hjust=1), panel.grid=element_blank(),
+        strip.text=element_text(face="bold"))
+dev.off()
+
