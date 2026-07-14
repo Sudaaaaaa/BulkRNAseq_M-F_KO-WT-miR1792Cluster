@@ -14,7 +14,7 @@ sets_id <- lapply(panel, function(nm)
             rownames(counts_f)))
 scores <- gsva(gsvaParam(logcpm, sets_id, kcdf="Gaussian"))
 
-## interaction per sex (blocked on animal) -- the values of record
+
 test_one_sex <- function(sx) {
   cols <- sheet$sex == sx; s <- droplevels(sheet[cols, ])
   d  <- model.matrix(~ genotype * condition, data = s)
